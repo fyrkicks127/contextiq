@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # Backend API (Node.js + Fastify)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev  # Development Dockerfile
+    container_name: contextiq-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://contextiq:contextiq_password@postgres:5432/contextiq
+      - REDIS_URL=redis://:contextiq_redis@redis:6379
+      - CHOKIDAR_USEPOLLING=true  # Better file watching in Docker
+    volumes:
+      - ./backend:/app                    # Mount source code
+      - /app/node_modules                 # Don't override node_modules
+      - /app/dist                         # Don't override build output
+    command: npm run dev                  # Run in watch mode
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - contextiq-network
+    stdin_open: true    # Keep container running
+    tty: true          # Allocate TTY
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: contextiq-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+      - WATCHPACK_POLLING=true    # Next.js hot-reload in Docker
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    depends_on:
+      - backend
+    networks:
+      - contextiq-network
+    stdin_open: true
+    tty: true
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: contextiq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: contextiq
+      POSTGRES_PASSWORD: contextiq_password
+      POSTGRES_DB: contextiq
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextiq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - contextiq-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: contextiq-redis
+    restart: unless-stopped
+    command: redis-server --requirepass contextiq_redis --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - contextiq-network
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  contextiq-network:
+    driver: bridge
