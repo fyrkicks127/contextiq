@@ -1,0 +1,7 @@
+30-Mar-26
+
+Next steps when you're ready:
+
+Run prisma migrate dev --name init to generate the migration
+Generate the Prisma client (prisma generate)
+Wire up PrismaClient into the Fastify server

@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -7,11 +8,258 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// We'll add tables in next feature
-model User {
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum Role {
+  DEVELOPER
+  ADMIN
+  VIEWER
+}
+
+enum QuerySource {
+  CACHE
+  LLM
+}
+
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  REGISTER
+  API_KEY_CREATED
+  PROJECT_CREATED
+  PROJECT_UPDATED
+  PROJECT_DELETED
+  PROJECT_INDEXED
+  QUERY_EXECUTED
+  CACHE_HIT
+  CACHE_MISS
+  CODE_UPLOADED
+  CODE_VALIDATED
+  EMBEDDING_GENERATED
+  HEALTH_CHECK
+  CONFIG_UPDATED
+  ERROR_OCCURRED
+}
+
+enum AuditEntity {
+  USER
+  PROJECT
+  QUERY
+  CODE_CHUNK
+  CACHE_ENTRY
+  SYSTEM
+}
+
+enum AuditStatus {
+  SUCCESS
+  FAILURE
+  WARNING
+}
+
+// ─────────────────────────────────────────────
+// Organization
+// ─────────────────────────────────────────────
+
+model Organization {
   id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
+  name      String
+  slug      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  users    User[]
+  projects Project[]
+
+  @@index([slug])
+}
+
+// ─────────────────────────────────────────────
+// User
+// ─────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  apiKey       String   @unique @default(cuid())
+  role         Role     @default(DEVELOPER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+
+  projects  Project[]
+  queries   Query[]
+  auditLogs AuditLog[]
+
+  @@index([email])
+  @@index([apiKey])
+  @@index([organizationId])
+}
+
+// ─────────────────────────────────────────────
+// Project
+// ─────────────────────────────────────────────
+
+model Project {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+  language      String?
+  repository    String?
+  isIndexed     Boolean   @default(false)
+  lastIndexedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+
+  codeChunks   CodeChunk[]
+  queries      Query[]
+  cacheEntries CacheEntry[]
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([isIndexed])
+}
+
+// ─────────────────────────────────────────────
+// CodeChunk
+// ─────────────────────────────────────────────
+
+model CodeChunk {
+  id            String   @id @default(cuid())
+  filePath      String
+  content       String   @db.Text
+  language      String?
+  startLine     Int
+  endLine       Int
+  qdrantPointId String   @unique
+  createdAt     DateTime @default(now())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([filePath])
+  @@index([qdrantPointId])
+}
+
+// ─────────────────────────────────────────────
+// Query
+// ─────────────────────────────────────────────
+
+model Query {
+  id             String      @id @default(cuid())
+  query          String      @db.Text
+  queryEmbedding String?     @db.Text
+  response       String      @db.Text
+  source         QuerySource
+  model          String?
+  tokensUsed     Int         @default(0)
+  cost           Float       @default(0)
+  savings        Float       @default(0)
+  responseTime   Int
+  cacheHit       Boolean     @default(false)
+  chunksRetrieved Int        @default(0)
+  createdAt      DateTime    @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([source])
+  @@index([cacheHit])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// CacheEntry
+// ─────────────────────────────────────────────
+
+model CacheEntry {
+  id             String    @id @default(cuid())
+  queryHash      String    @unique
+  queryEmbedding String    @db.Text
+  response       String    @db.Text
+  model          String?
+  hitCount       Int       @default(0)
+  lastAccessedAt DateTime  @default(now())
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([queryHash])
+  @@index([projectId])
+  @@index([expiresAt])
+  @@index([lastAccessedAt])
+}
+
+// ─────────────────────────────────────────────
+// AuditLog
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id           String      @id @default(cuid())
+  action       AuditAction
+  entity       AuditEntity
+  entityId     String?
+  method       String?
+  endpoint     String?
+  ipAddress    String?
+  userAgent    String?
+  metadata     Json?
+  changes      Json?
+  status       AuditStatus @default(SUCCESS)
+  errorMessage String?     @db.Text
+  duration     Int?
+  timestamp    DateTime    @default(now())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([entityId])
+  @@index([status])
+  @@index([timestamp])
+  @@index([entity, entityId])
+  @@index([userId, timestamp])
+}
+
+// ─────────────────────────────────────────────
+// DailyMetrics
+// ─────────────────────────────────────────────
+
+model DailyMetrics {
+  id               String   @id @default(cuid())
+  date             DateTime @unique @db.Date
+  totalQueries     Int      @default(0)
+  cacheHits        Int      @default(0)
+  cacheMisses      Int      @default(0)
+  totalCost        Float    @default(0)
+  totalSavings     Float    @default(0)
+  totalTokens      Int      @default(0)
+  avgResponseTime  Float    @default(0)
+  uniqueUsers      Int      @default(0)
+  uniqueProjects   Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([date])
 }
