@@ -25,6 +25,7 @@ const envSchema = z.object({
   QDRANT_URL:             z.string().url(),
   QDRANT_API_KEY:         z.string().min(1),
   QDRANT_COLLECTION_NAME: z.string().default('contextiq-code-embeddings'),
+  QDRANT_ENVIRONMENT:     z.string().default('development'),
 
   // ── App ──────────────────────────────────────────────────────
   NODE_ENV:    z.enum(['development', 'production', 'test']).default('development'),

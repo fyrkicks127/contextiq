@@ -6,6 +6,8 @@ import { AuditAction, AuditEntity, AuditStatus } from '@prisma/client'
 import { logger, AuditLogger, PerformanceTracker } from './utils/logger'
 import { getPrismaClient } from './config/database'
 import { getCacheService } from './services/cache.service'
+import { getOpenAIService } from './services/openai.service'
+import { getQdrantService } from './services/qdrant.service'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -16,11 +18,19 @@ declare module 'fastify' {
 const prisma      = getPrismaClient()
 const auditLogger = new AuditLogger(prisma)
 const cache       = getCacheService(auditLogger)
+const openai      = getOpenAIService(auditLogger)
+const qdrant      = getQdrantService(auditLogger, openai)
+
+try {
+  await qdrant.initializeCollection()
+} catch (err) {
+  logger.warn({ err }, 'Qdrant unavailable at startup — will retry on first use')
+}
 
 await auditLogger.logSuccess({
   action: AuditAction.CONFIG_UPDATED,
   entity: AuditEntity.SYSTEM,
-  metadata: { event: 'cache_service_init' },
+  metadata: { event: 'services_init', services: ['cache', 'openai', 'qdrant'] },
 })
 
 const fastify = Fastify({ logger: logger as unknown as FastifyBaseLogger })
@@ -51,6 +61,8 @@ fastify.addHook('onResponse', async (request, reply) => {
   })
 })
 
+// ── Routes ────────────────────────────────────────────────────────────────────
+
 fastify.get('/health', async () => {
   const tracker = new PerformanceTracker()
   const result = {
@@ -66,12 +78,33 @@ fastify.get('/health', async () => {
 
 fastify.get(`/api/${config.API_VERSION}/cache/stats`, async (request, reply) => {
   const alive = await cache.ping()
-  if (!alive) {
-    reply.status(503)
-    return { error: 'Redis unavailable' }
-  }
+  if (!alive) { reply.status(503); return { error: 'Redis unavailable' } }
   return cache.getStats()
 })
+
+fastify.get(`/api/${config.API_VERSION}/ai/health`, async (request, reply) => {
+  const tracker = new PerformanceTracker()
+  const alive = await openai.ping()
+  tracker.log('openai_health_check')
+  if (!alive) { reply.status(503); return { status: 'unavailable', message: 'OpenAI API unreachable' } }
+  return { status: 'ok', model: config.OPENAI_CHAT_MODEL, embeddingModel: config.OPENAI_EMBEDDING_MODEL, duration: tracker.getDuration() }
+})
+
+fastify.get(`/api/${config.API_VERSION}/vector/health`, async (request, reply) => {
+  const tracker = new PerformanceTracker()
+  const alive = await qdrant.ping()
+  tracker.log('qdrant_health_check')
+  if (!alive) { reply.status(503); return { status: 'unavailable', message: 'Qdrant cluster unreachable' } }
+  return { status: 'ok', collection: config.QDRANT_COLLECTION_NAME, environment: config.QDRANT_ENVIRONMENT, duration: tracker.getDuration() }
+})
+
+fastify.get(`/api/${config.API_VERSION}/vector/stats`, async (request, reply) => {
+  const alive = await qdrant.ping()
+  if (!alive) { reply.status(503); return { error: 'Qdrant unavailable' } }
+  return qdrant.getStats()
+})
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 const shutdown = async () => {
   logger.info('Shutting down server...')
